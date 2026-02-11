@@ -310,39 +310,43 @@ class _MessageBubble extends StatelessWidget {
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
-      child: Row(
-        mainAxisAlignment:
-            isHelper ? MainAxisAlignment.end : MainAxisAlignment.start,
-        children: [
-          Container(
-            constraints:
-                BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.72),
-            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
-            decoration: BoxDecoration(
-              color: isHelper ? AppColors.softSage : Colors.white,
-              borderRadius: BorderRadius.only(
-                topLeft: const Radius.circular(20),
-                topRight: const Radius.circular(20),
-                bottomLeft: Radius.circular(isHelper ? 20 : 4),
-                bottomRight: Radius.circular(isHelper ? 4 : 20),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          return Align(
+            alignment: isHelper ? Alignment.centerRight : Alignment.centerLeft,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxWidth: constraints.maxWidth * 0.75,
               ),
-              boxShadow: [
-                BoxShadow(
-                  color: AppColors.warmBrown.withValues(alpha: 0.06),
-                  blurRadius: 8,
-                  offset: const Offset(0, 2),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+                decoration: BoxDecoration(
+                  color: isHelper ? AppColors.softSage : Colors.white,
+                  borderRadius: BorderRadius.only(
+                    topLeft: const Radius.circular(20),
+                    topRight: const Radius.circular(20),
+                    bottomLeft: Radius.circular(isHelper ? 20 : 4),
+                    bottomRight: Radius.circular(isHelper ? 4 : 20),
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: AppColors.warmBrown.withValues(alpha: 0.06),
+                      blurRadius: 8,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
                 ),
-              ],
-            ),
-            child: Text(
-              message.text,
-              style: AppTypography.bodySerif.copyWith(
-                fontSize: 17,
-                color: isHelper ? AppColors.cream : AppColors.charcoal,
+                child: Text(
+                  message.text,
+                  style: AppTypography.bodySerif.copyWith(
+                    fontSize: 17,
+                    color: isHelper ? AppColors.cream : AppColors.charcoal,
+                  ),
+                ),
               ),
             ),
-          ),
-        ],
+          );
+        },
       ),
     );
   }
