@@ -5,7 +5,7 @@
   // FastAPI base URL — update when backend is running
   // LOCAL:  'http://localhost:8000'
   // NGROK:  paste your ngrok URL here, e.g. 'https://abc123.ngrok-free.app'
-  static const String apiBase = 'https://9dae-202-94-70-51.ngrok-free.app';
+  static const String apiBase = 'https://a3ec-202-94-70-51.ngrok-free.app';
 
   static const String transcribe     = '/transcribe';
   static const String extractProfile = '/extract-profile';
