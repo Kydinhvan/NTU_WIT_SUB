@@ -12,18 +12,20 @@ import '../../../shared/services/firebase_service.dart';
 import '../../../shared/services/scaffold_service.dart';
 
 final _helperMessagesProvider = StateProvider<List<ChatMessage>>((ref) => [
-  // Seed with seeker's opening message
-  ChatMessage(
-    id: 'seed_001',
-    senderId: 'seeker_001',
-    text: "I've been really struggling with my dad lately. We keep fighting about my future and I feel like nobody in my family understands me.",
-    mode: 'vent',
-    isAiScaffold: false,
-    createdAt: DateTime.now().subtract(const Duration(minutes: 2)),
-  ),
-]);
+      // Seed with seeker's opening message
+      ChatMessage(
+        id: 'seed_001',
+        senderId: 'seeker_001',
+        text:
+            "I've been really struggling with my dad lately. We keep fighting about my future and I feel like nobody in my family understands me.",
+        mode: 'vent',
+        isAiScaffold: false,
+        createdAt: DateTime.now().subtract(const Duration(minutes: 2)),
+      ),
+    ]);
 
-final _helperModeProvider = StateProvider<ConversationMode>((ref) => ConversationMode.vent);
+final _helperModeProvider =
+    StateProvider<ConversationMode>((ref) => ConversationMode.vent);
 final _scaffoldSuggestionProvider = StateProvider<String?>((ref) => null);
 
 class ActiveChatScreen extends ConsumerStatefulWidget {
@@ -66,7 +68,10 @@ class _ActiveChatScreenState extends ConsumerState<ActiveChatScreen> {
       final messages = ref.read(_helperMessagesProvider);
       final recent = messages
           .sublist(messages.length > 6 ? messages.length - 6 : 0)
-          .map((m) => {'role': m.senderId == _helperId ? 'assistant' : 'user', 'content': m.text})
+          .map((m) => {
+                'role': m.senderId == _helperId ? 'assistant' : 'user',
+                'content': m.text
+              })
           .toList();
       final suggestion = await ScaffoldService.instance.getSuggestion(
         mode: mode,
@@ -143,7 +148,8 @@ class _ActiveChatScreenState extends ConsumerState<ActiveChatScreen> {
         backgroundColor: AppColors.cream,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_rounded, color: AppColors.warmBrown),
+          icon: const Icon(Icons.arrow_back_ios_rounded,
+              color: AppColors.warmBrown),
           onPressed: () => context.go('/helper/home'),
         ),
         title: Column(
@@ -181,7 +187,8 @@ class _ActiveChatScreenState extends ConsumerState<ActiveChatScreen> {
             Expanded(
               child: ListView.builder(
                 controller: _scrollController,
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                 itemCount: messages.length,
                 itemBuilder: (_, i) => _MessageBubble(
                   message: messages[i],
@@ -228,10 +235,13 @@ class _ModeBar extends StatelessWidget {
                 children: [
                   Text(mode.emoji, style: const TextStyle(fontSize: 14)),
                   const SizedBox(width: 4),
-                  Text(mode.label, style: AppTypography.labelSans.copyWith(
-                    color: isSelected ? AppColors.cream : AppColors.softSage,
-                    fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
-                  )),
+                  Text(mode.label,
+                      style: AppTypography.labelSans.copyWith(
+                        color:
+                            isSelected ? AppColors.cream : AppColors.softSage,
+                        fontWeight:
+                            isSelected ? FontWeight.w700 : FontWeight.w500,
+                      )),
                 ],
               ),
             ),
@@ -284,9 +294,11 @@ class _ScaffoldRail extends StatelessWidget {
                 color: AppColors.softSage,
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: Text('Use', style: AppTypography.captionSans.copyWith(
-                color: AppColors.cream, fontWeight: FontWeight.w700,
-              )),
+              child: Text('Use',
+                  style: AppTypography.captionSans.copyWith(
+                    color: AppColors.cream,
+                    fontWeight: FontWeight.w700,
+                  )),
             ),
           ),
           const SizedBox(width: 6),
@@ -314,31 +326,33 @@ class _MessageBubble extends StatelessWidget {
         mainAxisAlignment:
             isHelper ? MainAxisAlignment.end : MainAxisAlignment.start,
         children: [
-          Container(
-            constraints:
-                BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.72),
-            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
-            decoration: BoxDecoration(
-              color: isHelper ? AppColors.softSage : Colors.white,
-              borderRadius: BorderRadius.only(
-                topLeft: const Radius.circular(20),
-                topRight: const Radius.circular(20),
-                bottomLeft: Radius.circular(isHelper ? 20 : 4),
-                bottomRight: Radius.circular(isHelper ? 4 : 20),
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: AppColors.warmBrown.withValues(alpha: 0.06),
-                  blurRadius: 8,
-                  offset: const Offset(0, 2),
+          Flexible(
+            child: Container(
+              constraints: BoxConstraints(
+                  maxWidth: MediaQuery.of(context).size.width * 0.72),
+              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+              decoration: BoxDecoration(
+                color: isHelper ? AppColors.softSage : Colors.white,
+                borderRadius: BorderRadius.only(
+                  topLeft: const Radius.circular(20),
+                  topRight: const Radius.circular(20),
+                  bottomLeft: Radius.circular(isHelper ? 20 : 4),
+                  bottomRight: Radius.circular(isHelper ? 4 : 20),
                 ),
-              ],
-            ),
-            child: Text(
-              message.text,
-              style: AppTypography.bodySerif.copyWith(
-                fontSize: 17,
-                color: isHelper ? AppColors.cream : AppColors.charcoal,
+                boxShadow: [
+                  BoxShadow(
+                    color: AppColors.warmBrown.withValues(alpha: 0.06),
+                    blurRadius: 8,
+                    offset: const Offset(0, 2),
+                  ),
+                ],
+              ),
+              child: Text(
+                message.text,
+                style: AppTypography.bodySerif.copyWith(
+                  fontSize: 17,
+                  color: isHelper ? AppColors.cream : AppColors.charcoal,
+                ),
               ),
             ),
           ),
@@ -386,7 +400,8 @@ class _InputBar extends StatelessWidget {
                   borderRadius: BorderRadius.circular(16),
                   borderSide: BorderSide.none,
                 ),
-                contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
               ),
               onSubmitted: (_) => onSend(),
             ),
@@ -401,7 +416,8 @@ class _InputBar extends StatelessWidget {
                 color: AppColors.softSage,
                 borderRadius: BorderRadius.circular(16),
               ),
-              child: const Icon(Icons.arrow_upward_rounded, color: AppColors.cream),
+              child: const Icon(Icons.arrow_upward_rounded,
+                  color: AppColors.cream),
             ),
           ),
         ],
