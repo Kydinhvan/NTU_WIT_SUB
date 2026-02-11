@@ -19,11 +19,13 @@ import json
 import tempfile
 import logging
 import time
+import hashlib
 from typing import List, Optional
+from collections import OrderedDict
 import numpy as np
 
 from dotenv import load_dotenv
-load_dotenv()  # Load .env file so OPENROUTER_API_KEY is available
+load_dotenv()
 
 from fastapi import FastAPI, Request, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -50,22 +52,80 @@ from local_test_matcher import (
 
 from stt import transcribe_file
 
-# ── OpenAI client (for extract-profile, safety-check, scaffold) ─────────────
+# ── OpenRouter client (for extract-profile, safety-check, scaffold) ────────────
 try:
     from openai import OpenAI
-    api_key = os.getenv("OPENAI_API_KEY")
+    api_key = os.getenv("OPENROUTER_API_KEY")
     if api_key:
-        openai_client = OpenAI(api_key=api_key)
-        GPT_MODEL = "gpt-4o"
-        logger.info("OpenAI client initialized (model=%s)", GPT_MODEL)
+        openai_client = OpenAI(
+            api_key=api_key,
+            base_url="https://openrouter.ai/api/v1",
+        )
+        GPT_MODEL = "openai/gpt-4o-mini"  # cheapest good model — $0.15/M input
+        logger.info("OpenRouter client initialized (model=%s)", GPT_MODEL)
     else:
         openai_client = None
         GPT_MODEL = None
-        logger.info("OPENAI_API_KEY not set; using mock fallbacks")
+        logger.info("OPENROUTER_API_KEY not set; using mock fallbacks")
 except Exception:
-    logger.error("Failed to initialize OpenAI client", exc_info=True)
+    logger.error("Failed to initialize OpenRouter client", exc_info=True)
     openai_client = None
     GPT_MODEL = None
+
+
+# ── Credit-saving infrastructure ─────────────────────────────────────────────
+
+# LRU response cache — avoids re-calling AI for identical inputs
+_CACHE_MAX = 200
+_response_cache: OrderedDict = OrderedDict()
+
+def _cache_key(prefix: str, text: str) -> str:
+    """Generate a cache key from prefix + first 500 chars of text."""
+    return hashlib.md5(f"{prefix}:{text[:500]}".encode()).hexdigest()
+
+def _cache_get(key: str):
+    if key in _response_cache:
+        _response_cache.move_to_end(key)
+        logger.info("Cache HIT — saved 1 AI call")
+        return _response_cache[key]
+    return None
+
+def _cache_set(key: str, value):
+    _response_cache[key] = value
+    if len(_response_cache) > _CACHE_MAX:
+        _response_cache.popitem(last=False)
+
+# Per-endpoint rate limiter — max N calls per minute
+_rate_windows: dict = {}  # endpoint → list of timestamps
+RATE_LIMITS = {
+    "seeker_chat": 15,      # max 15 chat turns/min
+    "extract_seeker": 5,    # max 5 profile extractions/min
+    "extract_helper": 5,
+    "safety_check": 10,
+    "scaffold": 20,         # helpers need suggestions frequently
+}
+
+def _rate_ok(endpoint: str) -> bool:
+    """Check if we're within rate limit for this endpoint."""
+    now = time.time()
+    limit = RATE_LIMITS.get(endpoint, 10)
+    window = _rate_windows.setdefault(endpoint, [])
+    # Prune entries older than 60s
+    _rate_windows[endpoint] = [t for t in window if now - t < 60]
+    if len(_rate_windows[endpoint]) >= limit:
+        logger.warning("Rate limit hit for %s (%d/%d per min) — using fallback", endpoint, len(_rate_windows[endpoint]), limit)
+        return False
+    _rate_windows[endpoint].append(now)
+    return True
+
+# Input truncation — cap input tokens to save credits
+MAX_INPUT_CHARS = 2000  # ~500 tokens, plenty for profile extraction
+
+def _truncate(text: str, max_chars: int = MAX_INPUT_CHARS) -> str:
+    if len(text) <= max_chars:
+        return text
+    logger.info("Truncating input from %d to %d chars", len(text), max_chars)
+    return text[:max_chars] + "..."
 
 
 app = FastAPI(title="Bridge API", version="1.0.0")
@@ -178,50 +238,68 @@ async def transcribe(file: UploadFile = File(None), body: TranscribeRequest = No
 
 @app.post("/extract-profile")
 async def extract_profile(req: SeekerProfileRequest):
-    """Use GPT-4o to extract a structured profile from vent/narrative text."""
-    logger.info("/extract-profile requested (mode=%s, openrouter=%s)", req.mode, openai_client is not None)
+    """Use AI to extract a structured profile from vent/narrative text."""
+    logger.info("/extract-profile requested (mode=%s, ai=%s)", req.mode, openai_client is not None)
 
     # ── seeker_chat mode: conversational follow-up ──
     if req.mode == "seeker_chat":
-        if not openai_client:
-            logger.info("/extract-profile seeker_chat using mock reply")
+        if not openai_client or not _rate_ok("seeker_chat"):
+            logger.info("/extract-profile seeker_chat using scripted fallback")
             return _seeker_chat_fallback(req.messages or [])
+
+        # Debounce: cache by last user message
+        msgs = req.messages or []
+        last_user = next((m["content"] for m in reversed(msgs) if m.get("role") == "user"), "")
+        ck = _cache_key("seeker_chat", last_user)
+        cached = _cache_get(ck)
+        if cached:
+            return cached
+
         try:
             system_msg = (
                 "You are a warm, empathetic mental-health onboarding assistant called Bridge. "
                 "Your goal is to gently understand the user's situation in 3-4 exchanges, "
                 "then say you'll find them someone who understands. Keep replies short (2-3 sentences)."
             )
-            msgs = [{"role": "system", "content": system_msg}] + (req.messages or [])
+            # Only send last 6 messages to save tokens
+            recent = msgs[-6:]
+            api_msgs = [{"role": "system", "content": system_msg}] + recent
             resp = openai_client.chat.completions.create(
-                model=GPT_MODEL, messages=msgs, temperature=0.7,
+                model=GPT_MODEL, messages=api_msgs,
+                temperature=0.7, max_tokens=150,
             )
+            result = {"reply": resp.choices[0].message.content.strip()}
+            _cache_set(ck, result)
             logger.info("/extract-profile seeker_chat completed")
-            return {"reply": resp.choices[0].message.content.strip()}
+            return result
         except Exception:
-            logger.error("/extract-profile seeker_chat API failed, using fallback", exc_info=True)
-            return _seeker_chat_fallback(req.messages or [])
+            logger.error("/extract-profile seeker_chat AI failed, using fallback", exc_info=True)
+            return _seeker_chat_fallback(msgs)
 
     # ── extract_helper mode ──
     if req.mode == "extract_helper":
-        if not openai_client:
-            logger.info("/extract-profile extract_helper using mock profile")
+        if not openai_client or not _rate_ok("extract_helper"):
+            logger.info("/extract-profile extract_helper using fallback profile")
             return _extract_helper_fallback(req.selected_themes, req.theme_narratives)
-        try:
-            # Build per-theme narrative block for AI analysis
-            user_content = ""
-            if req.theme_narratives:
-                for theme_name, story in req.theme_narratives.items():
-                    if story and story.strip():
-                        user_content += f"\n\n## {theme_name}\n{story.strip()}"
-            elif req.narrative:
-                user_content = req.narrative
-            if req.selected_themes:
-                user_content += f"\n\nSelected themes: {', '.join(req.selected_themes)}"
 
+        user_content = ""
+        if req.theme_narratives:
+            for theme_name, story in req.theme_narratives.items():
+                if story and story.strip():
+                    user_content += f"\n\n## {theme_name}\n{_truncate(story.strip(), 400)}"
+        elif req.narrative:
+            user_content = _truncate(req.narrative)
+        if req.selected_themes:
+            user_content += f"\n\nSelected themes: {', '.join(req.selected_themes)}"
+
+        ck = _cache_key("extract_helper", user_content)
+        cached = _cache_get(ck)
+        if cached:
+            return cached
+
+        try:
             system_prompt = f"""You are an expert psychometric profiler for a peer-support matching platform.
 Analyze the helper's per-theme narratives and score them on MIRRORED METRICS that match how seekers are scored.
-This enables accurate helper↔seeker cosine-similarity matching.
 
 Return ONLY valid JSON with this structure:
 {{
@@ -241,17 +319,7 @@ Return ONLY valid JSON with this structure:
       "self_awareness": 0.0-1.0
     }}
   }}
-}}
-
-Scoring guide:
-- emotional_depth: How deeply did they engage with the emotional reality? (0=surface, 1=profound)
-- resilience_demonstrated: How much growth/recovery is evident? (0=still struggling, 1=fully processed)
-- approach_style: Introvert=internal reflection, Extrovert=social coping, Balanced=both
-- coping_method: What strategy did they primarily use?
-- communication_tone: How do they naturally communicate about difficult topics?
-- empathy_signal: How well do they demonstrate understanding of others in similar situations?
-- actionability: How practical/actionable is their experience? (0=abstract, 1=concrete steps)
-- self_awareness: How self-aware are they about the experience? (0=unexamined, 1=deeply reflected)"""
+}}"""
 
             resp = openai_client.chat.completions.create(
                 model=GPT_MODEL,
@@ -259,26 +327,33 @@ Scoring guide:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_content},
                 ],
-                temperature=0.3,
+                temperature=0.3, max_tokens=600,
             )
             text = resp.choices[0].message.content.strip()
             if text.startswith("```"):
                 text = text.split("\n", 1)[1].rsplit("```", 1)[0]
             try:
                 parsed = json.loads(text)
+                _cache_set(ck, parsed)
             except Exception:
                 logger.error("/extract-profile extract_helper JSON parse failed", exc_info=True)
                 return _extract_helper_fallback(req.selected_themes, req.theme_narratives)
-            logger.info("/extract-profile extract_helper completed with theme_scores")
+            logger.info("/extract-profile extract_helper completed")
             return parsed
         except Exception:
-            logger.error("/extract-profile extract_helper API failed, using fallback", exc_info=True)
+            logger.error("/extract-profile extract_helper AI failed, using fallback", exc_info=True)
             return _extract_helper_fallback(req.selected_themes, req.theme_narratives)
 
     # ── extract_seeker mode (default) ──
-    if not openai_client:
-        logger.info("/extract-profile extract_seeker using mock profile")
+    if not openai_client or not _rate_ok("extract_seeker"):
+        logger.info("/extract-profile extract_seeker using fallback profile")
         return _extract_seeker_fallback()
+
+    transcript_text = _truncate(req.transcript or "")
+    ck = _cache_key("extract_seeker", transcript_text)
+    cached = _cache_get(ck)
+    if cached:
+        return cached
 
     try:
         system_prompt = f"""Extract a structured profile from this vent/narrative. Return ONLY valid JSON with:
@@ -293,23 +368,23 @@ Scoring guide:
             model=GPT_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": req.transcript or ""},
+                {"role": "user", "content": transcript_text},
             ],
-            temperature=0.3,
+            temperature=0.3, max_tokens=400,
         )
         text = resp.choices[0].message.content.strip()
-        # Strip markdown code fences if present
         if text.startswith("```"):
             text = text.split("\n", 1)[1].rsplit("```", 1)[0]
         try:
             parsed = json.loads(text)
+            _cache_set(ck, parsed)
         except Exception:
             logger.error("/extract-profile extract_seeker JSON parse failed", exc_info=True)
             return _extract_seeker_fallback()
         logger.info("/extract-profile extract_seeker completed")
         return parsed
     except Exception:
-        logger.error("/extract-profile extract_seeker API failed, using fallback", exc_info=True)
+        logger.error("/extract-profile extract_seeker AI failed, using fallback", exc_info=True)
         return _extract_seeker_fallback()
 
 
@@ -386,62 +461,87 @@ async def discover(req: DiscoverRequest):
 
 @app.post("/safety-check", response_model=SafetyResponse)
 async def safety_check(req: SafetyRequest):
-    """GPT-4o risk classifier — screens vent before matching."""
-    logger.info("/safety-check requested (openai=%s)", openai_client is not None)
-    if not openai_client:
-        logger.info("/safety-check using mock risk level")
+    """AI risk classifier — screens vent before matching."""
+    logger.info("/safety-check requested (ai=%s)", openai_client is not None)
+
+    # Skip AI for very short texts — not enough signal
+    if len(req.transcript.strip()) < 20:
+        logger.info("/safety-check text too short, defaulting to low")
         return SafetyResponse(risk_level="low")
 
+    if not openai_client or not _rate_ok("safety_check"):
+        logger.info("/safety-check using default risk level")
+        return SafetyResponse(risk_level="low")
+
+    # Cache safety checks
+    truncated = _truncate(req.transcript, 1000)
+    ck = _cache_key("safety", truncated)
+    cached = _cache_get(ck)
+    if cached:
+        return SafetyResponse(risk_level=cached)
+
     try:
+        system_prompt = (
+            "You are a mental health risk classifier. Assess the following text for self-harm, "
+            "suicidal ideation, or crisis indicators. Respond with ONLY one word: low, medium, or high."
+        )
         resp = openai_client.chat.completions.create(
             model=GPT_MODEL,
             messages=[
-                {"role": "system", "content": (
-                    "You are a mental health risk classifier. Assess the following text for self-harm, "
-                    "suicidal ideation, or crisis indicators. Respond with ONLY one word: low, medium, or high."
-                )},
-                {"role": "user", "content": req.transcript},
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": truncated},
             ],
-            temperature=0.0,
-            max_tokens=5,
+            temperature=0.0, max_tokens=5,
         )
         level = resp.choices[0].message.content.strip().lower()
         if level not in ("low", "medium", "high"):
             logger.error("/safety-check invalid model output: %s", level)
             level = "low"
+        _cache_set(ck, level)
         logger.info("/safety-check completed (risk_level=%s)", level)
         return SafetyResponse(risk_level=level)
     except Exception:
-        logger.error("/safety-check API failed, defaulting to low", exc_info=True)
+        logger.error("/safety-check AI failed, defaulting to low", exc_info=True)
         return SafetyResponse(risk_level="low")
 
 
 @app.post("/scaffold", response_model=ScaffoldResponse)
 async def scaffold(req: ScaffoldRequest):
     """Generate in-chat helper suggestion based on conversation mode."""
-    logger.info("/scaffold requested (mode=%s, openai=%s)", req.mode, openai_client is not None)
-    if not openai_client:
+    logger.info("/scaffold requested (mode=%s, ai=%s)", req.mode, openai_client is not None)
+
+    if not openai_client or not _rate_ok("scaffold"):
         logger.info("/scaffold using fallback suggestion")
         return ScaffoldResponse(suggestion=_scaffold_fallback(req.mode))
 
-    try:
-        messages = [{"role": "system", "content": req.system_prompt}]
-        messages.extend(req.messages[-6:])  # Last 6 messages for context
-        messages.append({
-            "role": "user",
-            "content": "Based on the conversation so far, suggest ONE short, warm response the helper could say. Start with 'Try: '",
-        })
+    # Only send last 4 messages to save tokens
+    context_msgs = req.messages[-4:]
+    user_content = (
+        "Conversation so far:\n" +
+        "\n".join(f"{m['role']}: {_truncate(m['content'], 200)}" for m in context_msgs) +
+        "\n\nSuggest ONE short, warm response the helper could say. Start with 'Try: '"
+    )
 
+    ck = _cache_key("scaffold", user_content)
+    cached = _cache_get(ck)
+    if cached:
+        return ScaffoldResponse(suggestion=cached)
+
+    try:
         resp = openai_client.chat.completions.create(
             model=GPT_MODEL,
-            messages=messages,
-            temperature=0.7,
-            max_tokens=100,
+            messages=[
+                {"role": "system", "content": req.system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+            temperature=0.7, max_tokens=80,
         )
+        suggestion = resp.choices[0].message.content.strip()
+        _cache_set(ck, suggestion)
         logger.info("/scaffold completed")
-        return ScaffoldResponse(suggestion=resp.choices[0].message.content.strip())
+        return ScaffoldResponse(suggestion=suggestion)
     except Exception:
-        logger.error("/scaffold API failed, using fallback", exc_info=True)
+        logger.error("/scaffold AI failed, using fallback", exc_info=True)
         return ScaffoldResponse(suggestion=_scaffold_fallback(req.mode))
 
 
@@ -544,7 +644,9 @@ async def health():
     return {
         "status": "ok",
         "helpers_loaded": len(helper_pool),
-        "openai_available": openai_client is not None,
+        "ai_available": openai_client is not None,
+        "ai_model": GPT_MODEL,
+        "cache_size": len(_response_cache),
         "embedding_mode": "sentence_transformers" if SENTENCE_TRANSFORMERS_AVAILABLE else "synthetic",
     }
 

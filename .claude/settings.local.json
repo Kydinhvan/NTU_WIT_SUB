@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(powershell -Command:*)",
+      "Bash(python3:*)",
+      "Bash(python:*)",
+      "Bash(*)",
+      "Bash(powershell -NoProfile -Command:*)",
+      "Bash(cmd /c \"powershell -NoProfile -File -\" << 'EOF'\n$script = @\"\nimport os\n\nbase = r'c:\\\\Users\\\\User\\\\Desktop\\\\NTU_WH\\\\bridge\\\\lib\\\\models'\nos.makedirs\\(base, exist_ok=True\\)\nprint\\('base dir ready:', base\\)\n\"@\nSet-Content -Path 'c:\\\\Users\\\\User\\\\Desktop\\\\NTU_WH\\\\write_models.py' -Encoding UTF8 -Value $script\nWrite-Host 'done'\nEOF)",
+      "Bash(flutter pub get:*)",
+      "Bash(flutter analyze:*)",
+      "Bash(flutter build:*)",
+      "Bash(Get-ChildItem \"$env:USERPROFILE\\\\AppData\\\\Local\\\\ngrok\" -ErrorAction SilentlyContinue)",
+      "Bash(Select-Object FullName)",
+      "Bash(git config:*)",
+      "Bash(gh auth status:*)",
+      "Bash(git -C \"C:\\\\Users\\\\User\\\\Desktop\\\\NTU_WH\\\\hackathonerds\" init)",
+      "Bash(printf:*)"
+    ]
+  }
+}

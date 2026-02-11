@@ -37,27 +37,37 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
   }
 
   Future<void> _runPipeline() async {
-    // Step 1: transcription (already done in vent screen — visual only here)
+    final transcript = widget.transcript ?? '';
+    debugPrint('[BRIDGE][PIPELINE] Starting pipeline. Transcript: "$transcript"');
+
+    // Step 1: transcription visual
     await Future.delayed(const Duration(seconds: 1));
     if (mounted) setState(() => _step = 1);
+    debugPrint('[BRIDGE][PIPELINE] Step 1 done — transcript received');
 
     // Step 2: profile extraction (mock)
     await Future.delayed(const Duration(seconds: 1, milliseconds: 500));
     if (mounted) setState(() => _step = 2);
+    debugPrint('[BRIDGE][PIPELINE] Step 2 done — profile extracted');
 
     // Step 3: matching
+    debugPrint('[BRIDGE][MATCH] Calling findMatch with transcript...');
     try {
       final result = await MatchingService.instance.findMatch(
         SeekerProfile.mock(),
         null, // Use full helper pool — don't filter by IDs
       );
+      debugPrint('[BRIDGE][MATCH] Match result: helperId=${result.helperId}, score=${result.score}');
+      debugPrint('[BRIDGE][MATCH] Breakdown: ${result.breakdown}');
+      debugPrint('[BRIDGE][MATCH] Explanation: ${result.explanation}');
       if (!mounted) return;
       context.go('/seeker/match-reveal', extra: result);
     } catch (e) {
-      debugPrint('Matching failed: $e');
+      debugPrint('[BRIDGE][MATCH] Matching failed: $e — falling back to mock result');
       if (!mounted) return;
-      // Use mock result so user isn't stuck
-      context.go('/seeker/match-reveal', extra: MatchResult.mock());
+      final mock = MatchResult.mock();
+      debugPrint('[BRIDGE][MATCH] Mock result: helperId=${mock.helperId}, score=${mock.score}');
+      context.go('/seeker/match-reveal', extra: mock);
     }
   }
 

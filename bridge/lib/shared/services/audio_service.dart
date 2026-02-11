@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:record/record.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:path_provider/path_provider.dart';
@@ -20,11 +21,15 @@ class AudioService {
   }
 
   Future<void> startRecording() async {
-    final dir = await getTemporaryDirectory();
-    _currentRecordPath = '${dir.path}/vent_${DateTime.now().millisecondsSinceEpoch}.m4a';
+    String? path;
+    if (!kIsWeb) {
+      final dir = await getTemporaryDirectory();
+      path = '${dir.path}/vent_${DateTime.now().millisecondsSinceEpoch}.m4a';
+    }
+    _currentRecordPath = path;
     await _recorder.start(
       const RecordConfig(encoder: AudioEncoder.aacLc, bitRate: 128000),
-      path: _currentRecordPath!,
+      path: path ?? '', // web: empty string → in-memory blob
     );
     _isRecording = true;
   }
@@ -38,7 +43,7 @@ class AudioService {
   Future<void> cancelRecording() async {
     await _recorder.cancel();
     _isRecording = false;
-    if (_currentRecordPath != null) {
+    if (!kIsWeb && _currentRecordPath != null) {
       final file = File(_currentRecordPath!);
       if (await file.exists()) await file.delete();
     }

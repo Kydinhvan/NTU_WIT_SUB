@@ -45,7 +45,7 @@ class RoleSelectionScreen extends ConsumerWidget {
                   title: 'I want to help',
                   subtitle: 'Share your lived experience.\nBe the person you needed.',
                   color: AppColors.softSage,
-                  onTap: () => context.go('/wellbeing-baseline/helper'),
+                  onTap: () => context.go('/onboarding/helper-chat'),
                 ).animate(delay: 350.ms).fadeIn(duration: 400.ms).slideY(begin: 0.2, end: 0),
 
                 const Spacer(),

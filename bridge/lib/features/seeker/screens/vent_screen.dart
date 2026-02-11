@@ -24,26 +24,43 @@ class _VentScreenState extends ConsumerState<VentScreen> {
   _VentMode _mode = _VentMode.voice;
   bool _isRecording = false;
   bool _hasRecording = false;
+  bool _isPressed = false; // visual press state
   String? _recordedPath;
   final _textController = TextEditingController();
   bool _submitting = false;
+  String? _statusMessage;
 
-  Future<void> _toggleRecording() async {
-    if (_isRecording) {
-      final path = await AudioService.instance.stopRecording();
-      setState(() {
-        _isRecording = false;
-        _hasRecording = path != null;
-        _recordedPath = path;
-      });
-    } else {
-      final ok = await AudioService.instance.hasPermission();
-      if (!ok) return;
-      await AudioService.instance.startRecording();
-      setState(() {
-        _isRecording = true;
-        _hasRecording = false;
-      });
+  Future<void> _startRecording() async {
+    final ok = await AudioService.instance.hasPermission();
+    if (!ok) {
+      setState(() => _statusMessage = 'Microphone permission denied. Please allow mic access in settings.');
+      debugPrint('[BRIDGE][INPUT] Mic permission denied');
+      return;
+    }
+    setState(() {
+      _statusMessage = null;
+      _isRecording = true;
+      _hasRecording = false;
+      _isPressed = true;
+    });
+    await AudioService.instance.startRecording();
+    debugPrint('[BRIDGE][INPUT] Voice recording started');
+  }
+
+  Future<void> _stopRecording() async {
+    final path = await AudioService.instance.stopRecording();
+    debugPrint('[BRIDGE][INPUT] Voice recording stopped → path: $path');
+    setState(() {
+      _isRecording = false;
+      _hasRecording = path != null;
+      _recordedPath = path;
+      _isPressed = false;
+      _statusMessage = path != null ? 'Got it — finding your match...' : null;
+    });
+    // Auto-proceed after short feedback delay
+    if (path != null) {
+      await Future.delayed(const Duration(milliseconds: 600));
+      await _submit();
     }
   }
 
@@ -55,24 +72,34 @@ class _VentScreenState extends ConsumerState<VentScreen> {
     String transcript = '';
 
     if (_mode == _VentMode.voice && _recordedPath != null) {
+      debugPrint('[BRIDGE][INPUT] Uploading audio: $_recordedPath');
       audioUrl = await AudioService.instance.uploadAudio(_recordedPath!);
+      debugPrint('[BRIDGE][INPUT] Audio uploaded → url: $audioUrl');
+
+      debugPrint('[BRIDGE][STT] Requesting transcription...');
       transcript = await TranscriptionService.instance.transcribeAudio(audioUrl);
+      debugPrint('[BRIDGE][STT] Transcript: "$transcript"');
     } else {
       transcript = _textController.text.trim();
+      debugPrint('[BRIDGE][INPUT] Text vent: "$transcript"');
       if (transcript.isEmpty) {
         setState(() => _submitting = false);
         return;
       }
     }
 
+    debugPrint('[BRIDGE][SAFETY] Running safety check on transcript...');
     final risk = await SafetyService.instance.assess(transcript);
+    debugPrint('[BRIDGE][SAFETY] Risk level: $risk');
 
     if (!mounted) return;
     if (SafetyService.instance.requiresIntervention(risk)) {
+      debugPrint('[BRIDGE][SAFETY] High risk → routing to safety check screen');
       context.go('/seeker/safety-check');
     } else {
       final uid = await FirebaseService.instance.getCurrentUserId() ?? '';
       await FirebaseService.instance.createVent(seekerId: uid, audioUrl: audioUrl);
+      debugPrint('[BRIDGE][FLOW] Vent saved, routing to processing with transcript');
       context.go('/seeker/processing', extra: transcript);
     }
   }
@@ -96,7 +123,6 @@ class _VentScreenState extends ConsumerState<VentScreen> {
         ),
         title: Text('Share', style: AppTypography.heading2Sans),
         actions: [
-          // Toggle voice / text
           Padding(
             padding: const EdgeInsets.only(right: 16),
             child: Row(
@@ -131,14 +157,39 @@ class _VentScreenState extends ConsumerState<VentScreen> {
     return Column(
       children: [
         const Spacer(),
-        Text(
-          _isRecording
-              ? 'Listening...'
-              : _hasRecording
-                  ? 'Recording saved'
-                  : 'Hold to share',
-          style: AppTypography.heading2Serif.copyWith(color: AppColors.warmBrown),
+
+        // Status text
+        AnimatedSwitcher(
+          duration: const Duration(milliseconds: 300),
+          child: Text(
+            _isRecording
+                ? 'Listening...'
+                : _hasRecording
+                    ? 'Recording saved'
+                    : 'Hold to share',
+            key: ValueKey(_isRecording ? 'rec' : _hasRecording ? 'saved' : 'idle'),
+            style: AppTypography.heading2Serif.copyWith(
+              color: _isRecording ? AppColors.terracotta : AppColors.warmBrown,
+            ),
+          ),
         ).animate().fadeIn(duration: 300.ms),
+
+        const SizedBox(height: 8),
+
+        // Sub-status message (permission error or confirmation)
+        if (_statusMessage != null)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: Text(
+              _statusMessage!,
+              style: AppTypography.captionSans.copyWith(
+                color: _statusMessage!.contains('denied')
+                    ? Colors.red.shade700
+                    : AppColors.softSage,
+              ),
+              textAlign: TextAlign.center,
+            ).animate().fadeIn(duration: 200.ms),
+          ),
 
         const SizedBox(height: 32),
 
@@ -150,22 +201,24 @@ class _VentScreenState extends ConsumerState<VentScreen> {
 
         const SizedBox(height: 40),
 
-        // Record button
-        GestureDetector(
-          onTap: _toggleRecording,
+        // Hold-to-record button — Listener fires instantly, no long-press delay
+        Listener(
+          onPointerDown: (_) => _startRecording(),
+          onPointerUp: (_) { if (_isRecording) _stopRecording(); },
+          onPointerCancel: (_) { if (_isRecording) _stopRecording(); },
           child: AnimatedContainer(
-            duration: const Duration(milliseconds: 200),
-            width: 96,
-            height: 96,
+            duration: const Duration(milliseconds: 150),
+            width: _isPressed ? 108 : 96,
+            height: _isPressed ? 108 : 96,
             decoration: BoxDecoration(
               color: _isRecording ? AppColors.terracotta : AppColors.amber,
               shape: BoxShape.circle,
               boxShadow: [
                 BoxShadow(
                   color: (_isRecording ? AppColors.terracotta : AppColors.amber)
-                      .withValues(alpha: 0.4),
-                  blurRadius: _isRecording ? 32 : 16,
-                  spreadRadius: _isRecording ? 8 : 0,
+                      .withValues(alpha: _isRecording ? 0.5 : 0.35),
+                  blurRadius: _isRecording ? 40 : 16,
+                  spreadRadius: _isRecording ? 12 : 0,
                 ),
               ],
             ),
@@ -175,34 +228,40 @@ class _VentScreenState extends ConsumerState<VentScreen> {
               size: 40,
             ),
           ),
-        ).animate(onPlay: (c) => c.repeat(reverse: true))
-            .scaleXY(end: _isRecording ? 1.05 : 1.0, duration: 600.ms),
+        ),
 
         const SizedBox(height: 16),
-        Text('Max 2 minutes', style: AppTypography.captionSans),
+        Text(
+          _isRecording ? 'Release to stop' : 'Hold the button to record',
+          style: AppTypography.captionSans.copyWith(
+            color: _isRecording
+                ? AppColors.terracotta
+                : AppColors.warmBrown.withValues(alpha: 0.5),
+          ),
+        ),
 
         const Spacer(),
 
-        if (_hasRecording)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 40),
-            child: SizedBox(
-              width: double.infinity,
-              height: 64,
-              child: ElevatedButton(
-                onPressed: _submitting ? null : _submit,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.amber,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-                  elevation: 0,
-                ),
-                child: _submitting
-                    ? const CircularProgressIndicator(color: AppColors.cream)
-                    : Text('Find my match',
-                        style: AppTypography.heading2Sans.copyWith(color: AppColors.cream)),
+        Padding(
+          padding: const EdgeInsets.only(bottom: 40),
+          child: SizedBox(
+            width: double.infinity,
+            height: 64,
+            child: ElevatedButton(
+              onPressed: (_hasRecording && !_submitting) ? _submit : null,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _hasRecording ? AppColors.amber : AppColors.amber.withValues(alpha: 0.3),
+                disabledBackgroundColor: AppColors.amber.withValues(alpha: 0.3),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+                elevation: 0,
               ),
+              child: _submitting
+                  ? const CircularProgressIndicator(color: AppColors.cream)
+                  : Text('Find my match',
+                      style: AppTypography.heading2Sans.copyWith(color: AppColors.cream)),
             ),
           ),
+        ),
       ],
     );
   }

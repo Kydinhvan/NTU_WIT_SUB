@@ -39,20 +39,44 @@ class _ActiveChatScreenState extends ConsumerState<ActiveChatScreen> {
   final _matchId = 'match_001';
   final _helperId = 'helper_001';
 
+  // Cooldown: minimum 30s between scaffold API calls to stay within free-tier limits
+  DateTime? _lastScaffoldCall;
+  bool _scaffoldLoading = false;
+  static const _scaffoldCooldown = Duration(seconds: 30);
+
   @override
   void initState() {
     super.initState();
     _refreshScaffold();
   }
 
-  Future<void> _refreshScaffold() async {
-    final mode = ref.read(_helperModeProvider);
-    final suggestion = await ScaffoldService.instance.getSuggestion(
-      mode: mode,
-      recentMessages: [],
-    );
-    if (mounted) {
-      ref.read(_scaffoldSuggestionProvider.notifier).state = suggestion;
+  Future<void> _refreshScaffold({bool force = false}) async {
+    if (_scaffoldLoading) return;
+    final now = DateTime.now();
+    if (!force &&
+        _lastScaffoldCall != null &&
+        now.difference(_lastScaffoldCall!) < _scaffoldCooldown) {
+      // Still in cooldown — skip the API call silently
+      return;
+    }
+    _scaffoldLoading = true;
+    _lastScaffoldCall = now;
+    try {
+      final mode = ref.read(_helperModeProvider);
+      final messages = ref.read(_helperMessagesProvider);
+      final recent = messages
+          .sublist(messages.length > 6 ? messages.length - 6 : 0)
+          .map((m) => {'role': m.senderId == _helperId ? 'assistant' : 'user', 'content': m.text})
+          .toList();
+      final suggestion = await ScaffoldService.instance.getSuggestion(
+        mode: mode,
+        recentMessages: recent,
+      );
+      if (mounted) {
+        ref.read(_scaffoldSuggestionProvider.notifier).state = suggestion;
+      }
+    } finally {
+      _scaffoldLoading = false;
     }
   }
 
@@ -136,7 +160,7 @@ class _ActiveChatScreenState extends ConsumerState<ActiveChatScreen> {
             selected: mode,
             onSelect: (m) {
               ref.read(_helperModeProvider.notifier).state = m;
-              _refreshScaffold();
+              _refreshScaffold(force: true);
             },
           ),
         ),
