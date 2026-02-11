@@ -55,7 +55,8 @@ NTU_WH/
 ### 1. Clone & Navigate
 
 ```bash
-cd NTU_WH
+git clone https://github.com/Kydinhvan/NTU_WIT_SUB.git
+cd NTU_WIT_SUB
 ```
 
 ### 2. Backend Setup
